@@ -13,7 +13,15 @@ type GroupedHistory = {
   items: ScriptHistoryItem[];
 };
 
+type LeadButton = {
+  id: string;
+  name: string;
+  formKey: string;
+};
+
 const STORAGE_KEY = "scriptHistory";
+const LEAD_EMBED_KEY = "leadEmbedScript";
+const LEAD_BUTTONS_KEY = "leadButtons";
 
 function loadHistoryFromStorage(): ScriptHistoryItem[] {
   if (typeof window === "undefined") return [];
@@ -102,7 +110,14 @@ export default function Home() {
   const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>(
     {},
   );
+  const [activeTab, setActiveTab] = useState<"agent" | "website-lead-sources">(
+    "agent",
+  );
+  const [embedScript, setEmbedScript] = useState("");
+  const [isEmbedLoaded, setIsEmbedLoaded] = useState(false);
+  const [leadButtons, setLeadButtons] = useState<LeadButton[]>([]);
   const lastScriptElementRef = useRef<HTMLScriptElement | null>(null);
+  const embedScriptElementRef = useRef<HTMLScriptElement | null>(null);
 
   const runScriptTag = (input: string): string | null => {
     if (typeof document === "undefined") {
@@ -156,6 +171,36 @@ export default function Home() {
     return executeScript(trimmed);
   };
 
+  const injectEmbedScript = (input: string): string | null => {
+    if (typeof document === "undefined") {
+      return "Script tags can only be run in the browser.";
+    }
+    const container = document.createElement("div");
+    container.innerHTML = input.trim();
+    const scriptEl = container.querySelector("script");
+    if (!scriptEl) {
+      return "Could not find a <script> element in the input.";
+    }
+    const s = document.createElement("script");
+    for (const attr of Array.from(scriptEl.attributes)) {
+      s.setAttribute(attr.name, attr.value);
+    }
+    if (!s.src) {
+      s.text = scriptEl.textContent ?? "";
+    }
+    try {
+      if (embedScriptElementRef.current?.isConnected) {
+        embedScriptElementRef.current.remove();
+      }
+      (document.head ?? document.body).appendChild(s);
+      embedScriptElementRef.current = s;
+      return null;
+    } catch (err) {
+      if (err instanceof Error) return err.message;
+      return "Failed to inject embed script.";
+    }
+  };
+
   useEffect(() => {
     const stored = loadHistoryFromStorage();
     if (stored.length === 0) return;
@@ -170,6 +215,26 @@ export default function Home() {
       ...prev,
       [latestDateKey]: true,
     }));
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const savedEmbed = window.localStorage.getItem(LEAD_EMBED_KEY);
+      if (savedEmbed) {
+        setEmbedScript(savedEmbed);
+        const err = injectEmbedScript(savedEmbed);
+        if (!err) setIsEmbedLoaded(true);
+      }
+      const savedButtons = window.localStorage.getItem(LEAD_BUTTONS_KEY);
+      if (savedButtons) {
+        const parsed = JSON.parse(savedButtons) as LeadButton[];
+        if (Array.isArray(parsed)) setLeadButtons(parsed);
+      }
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const groupedHistory = useMemo(
@@ -250,9 +315,97 @@ export default function Home() {
     }));
   };
 
+  const handleLoadEmbed = () => {
+    const trimmed = embedScript.trim();
+    if (!trimmed) return;
+    const err = injectEmbedScript(trimmed);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setIsEmbedLoaded(true);
+    try {
+      window.localStorage.setItem(LEAD_EMBED_KEY, trimmed);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleRemoveEmbed = () => {
+    if (embedScriptElementRef.current?.isConnected) {
+      embedScriptElementRef.current.remove();
+    }
+    embedScriptElementRef.current = null;
+    setEmbedScript("");
+    setIsEmbedLoaded(false);
+    try {
+      window.localStorage.removeItem(LEAD_EMBED_KEY);
+    } catch {
+      // ignore
+    }
+  };
+
+  const saveLeadButtons = (buttons: LeadButton[]) => {
+    setLeadButtons(buttons);
+    try {
+      window.localStorage.setItem(LEAD_BUTTONS_KEY, JSON.stringify(buttons));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleAddLeadButton = () => {
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    saveLeadButtons([...leadButtons, { id, name: "", formKey: "" }]);
+  };
+
+  const handleUpdateLeadButton = (
+    id: string,
+    field: "name" | "formKey",
+    value: string,
+  ) => {
+    saveLeadButtons(
+      leadButtons.map((b) => (b.id === id ? { ...b, [field]: value } : b)),
+    );
+  };
+
+  const handleDeleteLeadButton = (id: string) => {
+    saveLeadButtons(leadButtons.filter((b) => b.id !== id));
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 px-4 py-10 font-sans dark:bg-black">
       <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 rounded-2xl bg-white p-6 shadow-sm dark:bg-zinc-950 sm:p-10">
+        <nav className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
+          <button
+            type="button"
+            onClick={() => setActiveTab("agent")}
+            className={`px-4 py-2.5 text-sm font-medium transition ${
+              activeTab === "agent"
+                ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+            }`}
+          >
+            Agent
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("website-lead-sources")}
+            className={`px-4 py-2.5 text-sm font-medium transition ${
+              activeTab === "website-lead-sources"
+                ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+            }`}
+          >
+            Website Lead Sources
+          </button>
+        </nav>
+
+        {activeTab === "agent" ? (
+          <>
         <header className="flex flex-col gap-3 border-b border-zinc-200 pb-4 dark:border-zinc-800">
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             Script Loader
@@ -399,6 +552,139 @@ export default function Home() {
             )}
           </div>
         </section>
+          </>
+        ) : (
+          <div className="space-y-8">
+            {/* Embed Script */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="embed-script-input"
+                  className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
+                >
+                  Embed Script
+                </label>
+                {isEmbedLoaded && (
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    Script loaded
+                  </span>
+                )}
+              </div>
+              <textarea
+                id="embed-script-input"
+                className="h-32 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-mono text-zinc-900 shadow-sm outline-none ring-0 transition focus:border-zinc-400 focus:bg-white dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-zinc-500"
+                placeholder='<script src="https://example.com/embed.js"></script>'
+                value={embedScript}
+                onChange={(e) => setEmbedScript(e.target.value)}
+                disabled={isEmbedLoaded}
+              />
+              <div className="flex gap-2">
+                {!isEmbedLoaded ? (
+                  <button
+                    type="button"
+                    onClick={handleLoadEmbed}
+                    className="inline-flex items-center justify-center rounded-full bg-zinc-900 px-5 py-2.5 text-sm font-medium text-zinc-50 shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                  >
+                    Load Script
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleRemoveEmbed}
+                    className="inline-flex items-center justify-center rounded-full border border-red-300 px-5 py-2.5 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40"
+                  >
+                    Remove Script
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Lead Buttons */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                  Buttons
+                </h2>
+                <button
+                  type="button"
+                  onClick={handleAddLeadButton}
+                  className="inline-flex items-center justify-center rounded-full bg-zinc-900 px-4 py-1.5 text-xs font-medium text-zinc-50 shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                >
+                  + Add Button
+                </button>
+              </div>
+
+              {leadButtons.length === 0 ? (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  No buttons yet. Add a button to configure its name and form
+                  key.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {leadButtons.map((btn) => (
+                    <div
+                      key={btn.id}
+                      className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900"
+                    >
+                      <input
+                        type="text"
+                        placeholder="Button name"
+                        value={btn.name}
+                        onChange={(e) =>
+                          handleUpdateLeadButton(btn.id, "name", e.target.value)
+                        }
+                        className="flex-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500"
+                      />
+                      <input
+                        type="text"
+                        placeholder="data-univlane-form-key"
+                        value={btn.formKey}
+                        onChange={(e) =>
+                          handleUpdateLeadButton(
+                            btn.id,
+                            "formKey",
+                            e.target.value,
+                          )
+                        }
+                        className="flex-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-sm font-mono text-zinc-900 outline-none transition focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLeadButton(btn.id)}
+                        className="rounded-full border border-red-300 px-2.5 py-1 text-xs font-medium text-red-600 transition hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Rendered Buttons */}
+              {leadButtons.some((b) => b.name.trim()) && (
+                <div className="space-y-2 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Preview
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {leadButtons
+                      .filter((b) => b.name.trim())
+                      .map((btn) => (
+                        <button
+                          key={btn.id}
+                          type="button"
+                          data-univlane-form-key={btn.formKey}
+                          className="inline-flex items-center justify-center rounded-full bg-zinc-900 px-5 py-2.5 text-sm font-medium text-zinc-50 shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                        >
+                          {btn.name}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
